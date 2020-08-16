@@ -1,3 +1,4 @@
+import datetime as dt
 import numpy as np
 import os
 import sqlalchemy
@@ -23,9 +24,6 @@ Base.prepare(engine, reflect=True)
 Measurement = Base.classes.measurement
 Station = Base.classes.station
 
-# Create our session (link) from Python to the DB
-session = Session(engine)
-
 #################################################
 # Flask Setup
 #################################################
@@ -39,71 +37,140 @@ app = Flask(__name__)
 def home():
     """List all available api routes."""
     return (
-        f"Available Routes:<br/>"
-        f"/api/v1.0/precipitation<br/>"
-        f"/api/v1.0/stations<br/>"
-        f"/api/v1.0/tobs<br/>"
-        f"/api/v1.0/startdate<br/>"
-        f"/api/v1.0/startdate/enddate<br/>"
+        f"Aloha! This API has available Hawaii weather data<br/>"
+        f"Here are the available Routes:<br/>"
+        f"Precipitation: /api/v1.0/precipitation<br/>"
+        f"List of stations: /api/v1.0/stations<br/>"
+        f"One year temperature observations: /api/v1.0/tobs<br/>"
+        f"Temperature stats from start date: /api/v1.0/yyyy-mm-dd<br/>"
+        f"Temperature stats from start to end date: /api/v1.0/yyyy-mm-dd/yyyy-mm-dd<br/>"
     )
 
 @app.route("/api/v1.0/precipitation")
 def precipitation():
-    results = session.query(Measurement.date,func.avg(Measurement.prcp)).\
+    session = Session(engine)
+    # Query the average precipitation data by date
+    sel = [Measurement.date, func.avg(Measurement.prcp)]
+    results = session.query(*sel).\
         group_by(Measurement.date).all()
 
-    # Convert the query results to a dictionary using date as the key and prcp as the value.
-    d = {}    
-    for result in results:
-        d[result[0]] = result[1]
+    # Terminate session
+    session.close()
 
-    return jsonify(d)
+    # Convert the query results to a dictionary using date as the key and prcp as the value.
+    l = []   
+    for date,prcp in results:
+        d = {}
+        d["Date"] = date
+        d["Precipitation"] = prcp
+        l.append(d)
+
+    # Convert list to a JSON object and return
+    return jsonify(l)
 
 @app.route("/api/v1.0/stations")
 def stations():
-    results = session.query(Station.station,Station.name)
+    session = Session(engine)
+    # Query the station data
+    sel = [Station.station, Station.name, Station.latitude, Station.longitude, Station.elevation]
+    results = session.query(*sel).all()
 
-    stations = [result[1] for result in results]
-    
-    return jsonify(stations)
+    # Terminate session
+    session.close()
+
+    # Add the station names to a list
+    l = []
+    for station, name, latitude, longitude, elevation in results:
+        d = {}
+        d["Station"] = station
+        d["Name"] = name
+        d["Latitude"] = latitude
+        d["Longitude"] = longitude
+        d["Elevation"] = elevation
+        l.append(d) 
+
+    # Convert list to a JSON object and return
+    return jsonify(l)
 
 
 @app.route("/api/v1.0/tobs")
 def tobs():
+    session = Session(engine)
+
+    # Query the most recent date 
     recent_date = session.query(Measurement.date).\
-    filter(Measurement.station == 'USC00519281').order_by(Measurement.date.desc()).\
-    first()
-    results = session.query(Measurement.date,Measurement.tobs).filter(Measurement.date<=recent_date[0]).\
-        filter(Measurement.date>='2016-08-19').filter(Measurement.station == 'USC00519281').\
+        filter(Measurement.station == 'USC00519281').order_by(Measurement.date.desc()).\
+        first()[0]
+    # Convert to datetime
+    y,m,d= recent_date.split('-')
+    dt_converted = dt.datetime(int(y), int(m), int(d))
+
+    # Compute the first day to query from
+    dt_query = dt.date(dt_converted.year-1 , dt_converted.month, dt_converted.day+1)
+
+    # Query temperature data after the dt_query date for the most active station
+    sel = [Measurement.date,Measurement.tobs]
+    results = session.query(*sel).\
+        filter(Measurement.date>=dt_query).\
+        filter(Measurement.station == 'USC00519281').\
         group_by(Measurement.date).all()
 
-    temp = [result[1] for result in results]
-    
-    return jsonify(temp)
+    # Terminate session
+    session.close()
 
-@app.route("/api/v1.0/<start>/<end>")
-def end_date(start,end):
+    l = []
+    for date, tobs in results:
+        d = {}
+        d["Date"] = date
+        d["Temperature"] = tobs
+        l.append(d)
 
-    if end == "":
-        result = session.query(func.min(Measurement.tobs),func.max(Measurement.tobs),func.avg(Measurement.tobs)).\
-            filter(Measurement.date >= start).all()
-        temps = [result[0][0],result[0][1],result[0][2]]
-    else:
-        result = session.query(func.min(Measurement.tobs),func.max(Measurement.tobs),func.avg(Measurement.tobs)).\
-            filter(Measurement.date >= start).\
-            filter(Measurement.date <= end).all()
-        temps = [result[0][0],result[0][1],result[0][2]]
-    
-    return jsonify(temps)
+    # Convert list to a JSON object and return
+    return jsonify(l)
 
 @app.route("/api/v1.0/<start>")
-def start_date(start):
+def start(start):
+    session = Session(engine)
 
-    result = session.query(func.min(Measurement.tobs),func.max(Measurement.tobs),func.avg(Measurement.tobs)).\
+    # Query min, max, and average values since the given start date
+    sel =[func.min(Measurement.tobs),func.max(Measurement.tobs),func.avg(Measurement.tobs)]
+    results = session.query(*sel).\
         filter(Measurement.date >= start).all()
-    temps = [result[0][0],result[0][1],result[0][2]]
+    # Terminate session
+    session.close()
+    
+    l = []
+    for min_temp, avg_temp, max_temp in results:
+        d = {}
+        d["Min"] = min_temp
+        d["Average"] = avg_temp
+        d["Max"] = max_temp
+        l.append(d)
 
-    return jsonify(temps)
+    # Convert list to a JSON object and return
+    return jsonify(l)
+
+@app.route("/api/v1.0/<start>/<end>")
+def end(start,end):
+    session = Session(engine)
+
+    # Query min, max, and average values between the given start and end date
+    sel =[func.min(Measurement.tobs),func.max(Measurement.tobs),func.avg(Measurement.tobs)]
+    results = session.query(*sel).\
+        filter(Measurement.date >= start).\
+        filter(Measurement.date <= end).all()
+    session.close()
+
+    l = []
+    for min_temp, avg_temp, max_temp in results:
+        d = {}
+        d["Min"] = min_temp
+        d["Average"] = avg_temp
+        d["Max"] = max_temp
+        l.append(d)
+
+    # Convert list to a JSON object and return
+    return jsonify(l)
 
 if __name__ == "__main__":
     app.run(debug=True)
